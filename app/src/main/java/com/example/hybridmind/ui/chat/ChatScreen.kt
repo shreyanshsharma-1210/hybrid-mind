@@ -2,6 +2,7 @@ package com.example.hybridmind.ui.chat
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -43,6 +44,9 @@ fun ChatScreen(
     var messages by remember { mutableStateOf<List<Message>>(emptyList()) }
     var userInput by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var currentSessionImageData by remember { mutableStateOf<ByteArray?>(null) } // Persistent image context
+    var isFirstImageSend by remember { mutableStateOf(true) } // Track if this is first time sending current image
+    var fullScreenImagePath by remember { mutableStateOf<String?>(null) } // For full-screen viewer
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var debugInfo by remember { mutableStateOf("Not started") }
@@ -52,6 +56,17 @@ fun ChatScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         selectedImageUri = uri
+        // Load image data for persistent context
+        uri?.let {
+            try {
+                context.contentResolver.openInputStream(it)?.use { inputStream ->
+                    currentSessionImageData = inputStream.readBytes()
+                    isFirstImageSend = true // Reset flag for new image
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
     
     val isOnline by networkMonitor.isOnline.collectAsState(initial = true)
@@ -148,22 +163,30 @@ fun ChatScreen(
                                     userInput
                                 }
                                 
-                                var imageData: ByteArray? = null
-                                selectedImageUri?.let { uri ->
-                                    context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                                        imageData = inputStream.readBytes()
-                                    }
-                                }
+                                // Use persistent image data if available
+                                val imageData = currentSessionImageData
                                 
                                 // Prevent sending if no image and no text (though button should be disabled)
                                 if (msg.isBlank() && imageData == null) return@launch
 
-                                chatRepository.sendMessage(currentSessionId!!, msg, imageData)
+                                // Only save image to message on first send, but always send to AI for context
+                                chatRepository.sendMessage(
+                                    sessionId = currentSessionId!!,
+                                    userMessage = msg,
+                                    imageData = imageData,
+                                    saveImageToMessage = isFirstImageSend && imageData != null
+                                )
+                                
+                                // Mark that we've sent this image once
+                                if (imageData != null && isFirstImageSend) {
+                                    isFirstImageSend = false
+                                }
+                                
                                 debugInfo = "Message sent, reloading..."
                                 messages = chatRepository.getMessagesForSession(currentSessionId!!)
                                 debugInfo = "Reloaded: ${messages.size} messages"
                                 userInput = ""
-                                selectedImageUri = null // Clear image after sending
+                                selectedImageUri = null // Clear preview but keep context
                             } catch (e: Exception) {
                                 e.printStackTrace()
                                 errorMessage = "ERROR: ${e.javaClass.simpleName}: ${e.message}"
@@ -182,11 +205,51 @@ fun ChatScreen(
                     )
                 },
                 selectedImageUri = selectedImageUri,
-                onRemoveImage = { selectedImageUri = null },
+                onRemoveImage = { 
+                    selectedImageUri = null
+                    currentSessionImageData = null // Clear persistent context too
+                    isFirstImageSend = true // Reset for next image
+                },
+                onImageClick = { imagePath ->
+                    fullScreenImagePath = imagePath
+                },
                 errorMessage = errorMessage,
                 debugInfo = debugInfo,
                 modifier = Modifier.padding(padding)
             )
+        }
+    }
+    
+    // Full-screen image viewer
+    if (fullScreenImagePath != null) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { fullScreenImagePath = null }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface),
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = fullScreenImagePath,
+                    contentDescription = "Full screen image",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                )
+                
+                // Close button
+                IconButton(
+                    onClick = { fullScreenImagePath = null },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
         }
     }
 }
@@ -277,6 +340,7 @@ fun ChatContent(
     onPickImage: () -> Unit,
     selectedImageUri: Uri?,
     onRemoveImage: () -> Unit,
+    onImageClick: (String) -> Unit = {}, // For full-screen image view
     errorMessage: String? = null,
     debugInfo: String = "",
     modifier: Modifier = Modifier
@@ -316,7 +380,10 @@ fun ChatContent(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(messages) { message ->
-                MessageBubble(message)
+                MessageBubble(
+                    message = message,
+                    onImageClick = onImageClick
+                )
             }
             
             if (isLoading) {
@@ -350,20 +417,18 @@ fun ChatContent(
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                             .size(100.dp)
                     ) {
-                         // Using a simple Icon placeholder if coil isn't clearly imported, 
-                         // but ideally AsyncImage. For stability without checking dependencies, using a Box with Icon.
-                         // But actually, let's try to use AsyncImage or at least a text placeholder
-                         // Since I don't see Coil in the imports list I reviewed (I can add it, but safer to stick to basics if not sure)
-                         // Wait, I can see imports. I will use a simple Icon for reliability or just text filename if not.
-                         // Better: Use a reliable placeholder
-                         Surface(
-                             color = MaterialTheme.colorScheme.surfaceVariant,
-                             shape = MaterialTheme.shapes.medium
-                         ) {
-                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                 Icon(Icons.Default.Image, contentDescription = "Selected Image", modifier = Modifier.size(48.dp))
-                             }
-                         }
+                         // Show actual uploaded image
+                         AsyncImage(
+                             model = selectedImageUri,
+                             contentDescription = "Selected Image",
+                             modifier = Modifier
+                                 .fillMaxSize()
+                                 .background(
+                                     MaterialTheme.colorScheme.surfaceVariant,
+                                     MaterialTheme.shapes.medium
+                                 ),
+                             contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                         )
                          
                          // Close button
                          IconButton(
@@ -417,7 +482,10 @@ fun ChatContent(
 }
 
 @Composable
-fun MessageBubble(message: Message) {
+fun MessageBubble(
+    message: Message,
+    onImageClick: (String) -> Unit = {}
+) {
     val isUser = message.role == "user"
     
     Box(
@@ -434,11 +502,31 @@ fun MessageBubble(message: Message) {
             ),
             modifier = Modifier.widthIn(max = 300.dp)
         ) {
-            Text(
-                text = message.content,
-                modifier = Modifier.padding(12.dp),
-                style = MaterialTheme.typography.bodyMedium
-            )
+            Column(
+                modifier = Modifier.padding(12.dp)
+            ) {
+                // Display image if it exists
+                message.image_path?.let { imagePath ->
+                    AsyncImage(
+                        model = imagePath,
+                        contentDescription = "Message image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 200.dp)
+                            .padding(bottom = if (message.content.isNotEmpty()) 8.dp else 0.dp)
+                            .clickable { onImageClick(imagePath) },
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                }
+                
+                // Display text content
+                if (message.content.isNotEmpty()) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
         }
     }
 }

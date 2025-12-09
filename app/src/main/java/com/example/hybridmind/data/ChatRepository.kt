@@ -71,7 +71,8 @@ class ChatRepository(
     suspend fun saveUserMessage(
         sessionId: String,
         userMessage: String,
-        imageData: ByteArray? = null
+        imageData: ByteArray? = null,
+        saveImageToMessage: Boolean = true // Control whether to save image path to message
     ): Message {
         val timestamp = System.currentTimeMillis()
         
@@ -82,8 +83,8 @@ class ChatRepository(
         
         val isOfflineSession = session.is_offline_only
 
-        // Save image to local storage if present
-        val imagePath = if (imageData != null) {
+        // Save image to local storage if present AND we want to save it to the message
+        val imagePath = if (imageData != null && saveImageToMessage) {
             saveImageToInternalStorage(imageData)
         } else {
             null
@@ -199,9 +200,10 @@ class ChatRepository(
     suspend fun sendMessage(
         sessionId: String,
         userMessage: String,
-        imageData: ByteArray? = null
+        imageData: ByteArray? = null,
+        saveImageToMessage: Boolean = true
     ): String {
-        saveUserMessage(sessionId, userMessage, imageData)
+        saveUserMessage(sessionId, userMessage, imageData, saveImageToMessage)
         return generateResponse(sessionId, userMessage, imageData)
     }
 
