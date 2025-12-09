@@ -1,0 +1,27 @@
+{
+    "project_name": "HybridMind",
+    "package_name": "com.example.hybridmind",
+    "TODO": [
+        "1. Add google-services.json to app/ folder",
+        "2. Update Gemini API key in MainActivity.kt line 27",
+        "3. (Optional) Update model download URLs in DownloadScreen.kt"
+    ],
+    "firebase": {
+        "config_file": "app/google-services.json",
+        "required": true,
+        "instructions": "Download from Firebase Console after adding Android app"
+    },
+    "gemini_api": {
+        "file": "app/src/main/java/com/example/hybridmind/MainActivity.kt",
+        "line": 27,
+        "required": true,
+        "get_key_from": "https://makersuite.google.com/app/apikey"
+    },
+    "model_urls": {
+        "file": "app/src/main/java/com/example/hybridmind/ui/download/DownloadScreen.kt",
+        "gemma_2b": "https://example.com/gemma-2b.bin (PLACEHOLDER - update with real URL)",
+        "gemma_4b": "https://example.com/gemma-4b.bin (PLACEHOLDER - update with real URL)",
+        "required": false,
+        "note": "App will show download screen with these placeholders"
+    }
+}
