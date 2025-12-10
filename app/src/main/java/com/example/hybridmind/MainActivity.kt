@@ -48,7 +48,7 @@ class MainActivity : ComponentActivity() {
         modelDownloader = ModelDownloader(applicationContext)
 
         // Gemini API Key
-        val geminiApiKey = "AIzaSyAoeK-NZKgtNyVhjkLm9MzZeQyvHGdqWcs"
+        val geminiApiKey = "AIzaSyBO3WUf6uVeFDVhYU7I9dvvoVt92isv86U"
         chatRepository = ChatRepository(
             context = applicationContext,
             networkMonitor = networkMonitor,
@@ -100,15 +100,15 @@ fun AppNavigation(
     networkMonitor: NetworkMonitor,
     modelDownloader: ModelDownloader
 ) {
-    var currentScreen by remember { 
-        mutableStateOf<Screen>(
-            if (FirebaseAuth.getInstance().currentUser != null) {
-                Screen.Download
-            } else {
-                Screen.Landing
-            }
-        ) 
+    // Check if user is signed in and verified
+    val currentUser = FirebaseAuth.getInstance().currentUser
+    val initialScreen = if (currentUser != null && currentUser.isEmailVerified) {
+        Screen.Download // Verified user
+    } else {
+        Screen.Landing // Not signed in or not verified
     }
+    
+    var currentScreen by remember { mutableStateOf(initialScreen) }
     val scope = rememberCoroutineScope()
 
     when (currentScreen) {
@@ -143,9 +143,6 @@ fun AppNavigation(
                 onSignupSuccess = {
                     currentScreen = Screen.Login
                 },
-                onGoogleSignupSuccess = {
-                    currentScreen = Screen.Download
-                },
                 onBack = {
                     currentScreen = Screen.Landing
                 }
@@ -157,12 +154,34 @@ fun AppNavigation(
                 onDownloadComplete = { modelPath ->
                     scope.launch {
                         try {
+                            android.util.Log.d("MainActivity", "=== Model Initialization Started ===")
+                            android.util.Log.d("MainActivity", "Model path: $modelPath")
+                            
+                            // Check if file exists
+                            val file = java.io.File(modelPath)
+                            if (!file.exists()) {
+                                throw Exception("Model file not found at: $modelPath")
+                            }
+                            android.util.Log.d("MainActivity", "Model file exists: ${file.length()} bytes")
+                            
+                            // Initialize the model
                             chatRepository.initializeOfflineModel(modelPath)
+                            
+                            android.util.Log.d("MainActivity", "✅ Model initialization successful!")
+                            
                             currentScreen = Screen.Chat
                         } catch (e: Exception) {
-                            // Handle initialization error
+                            android.util.Log.e("MainActivity", "❌ Model initialization failed: ${e.message}", e)
+                            e.printStackTrace()
+                            // TODO: Show user-friendly error dialog with retry option
+                            // For now, error is logged and user stays on download screen
                         }
                     }
+                },
+                onBack = {
+                    // Sign out and go back to landing
+                    com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+                    currentScreen = Screen.Landing
                 }
             )
         }

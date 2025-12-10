@@ -21,6 +21,7 @@ import com.example.hybridmind.ui.download.ModelOptionCard
 import com.example.hybridmind.ui.download.getAvailableRAM
 import com.example.hybridmind.ui.download.formatBytes
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,6 +43,10 @@ fun SettingsScreen(
     // Delete Dialog State
     var showDeleteDialog by remember { mutableStateOf(false) }
     var isDeleting by remember { mutableStateOf(false) }
+    
+    // Delete Account Dialog State
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var isDeletingAccount by remember { mutableStateOf(false) }
 
     val availableRamGB = getAvailableRAM(context)
     val canUseAdvanced = availableRamGB >= 8
@@ -74,89 +79,89 @@ fun SettingsScreen(
             )
             
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                // Standard Model
-                val isStandardDownloaded = modelDownloader.isModelDownloaded("gemma-2b")
+                // Standard Model - Multimodal
+                val isStandardDownloaded = modelDownloader.isModelDownloaded("gemma-2b", "litertlm")
                 ModelOptionCard(
-                    title = "Standard (Gemma 2B)" + if(isStandardDownloaded) " - Ready" else "",
-                    description = "Fast, efficient. ~2GB.",
+                    title = "Standard (Gemma 3n E2B)" + if(isStandardDownloaded) " - Ready" else "",
+                    description = "Multimodal AI with image support. ~2GB.",
                     enabled = downloadProgress == null,
                     selected = selectedModel == "gemma-2b",
                     onClick = { selectedModel = "gemma-2b" }
                 )
 
-                // Advanced Model
-                val isAdvancedDownloaded = modelDownloader.isModelDownloaded("gemma-4b")
+                // Advanced Model - Also Multimodal
+                val isPremiumDownloaded = modelDownloader.isModelDownloaded("gemma-4b", "litertlm")
                 ModelOptionCard(
-                    title = "Advanced (Gemma 4B)" + if(isAdvancedDownloaded) " - Ready" else "",
-                    description = if (canUseAdvanced) "Higher reasoning. ~4GB" else "Higher reasoning. ~4GB (May be slow on < 8GB RAM)",
+                    title = "Advanced (Gemma 3n E4B)" + if(isPremiumDownloaded) " - Ready" else "",
+                    description = if (canUseAdvanced) "Multimodal, higher quality. ~4GB" else "Multimodal, higher quality. ~4GB (May be slow on < 8GB RAM)",
                     enabled = downloadProgress == null, // Always enabled
                     selected = selectedModel == "gemma-4b",
                     onClick = { selectedModel = "gemma-4b" }
                 )
 
                 if (downloadProgress != null) {
-                   LinearProgressIndicator(
-                       progress = downloadProgress!!.progress / 100f,
-                       modifier = Modifier.fillMaxWidth()
-                   )
-                   Text("${downloadProgress!!.progress}%")
+                    when (downloadProgress!!.status) {
+                        DownloadStatus.DOWNLOADING -> {
+                            LinearProgressIndicator(
+                                progress = { downloadProgress!!.progress / 100f },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "${downloadProgress!!.progress}% - ${formatBytes(downloadProgress!!.downloadedBytes)} / ${formatBytes(downloadProgress!!.totalBytes)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        DownloadStatus.COMPLETED -> {
+                            Text(
+                                text = "Download completed! Initializing...",
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        DownloadStatus.FAILED -> {
+                            Text(
+                                text = "Download failed. Please try again.",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        else -> {}
+                    }
                 } 
                 
                 Button(
                     onClick = {
                         selectedModel?.let { model ->
                             scope.launch {
-                                // If downloaded, switch immediately
-                                if (modelDownloader.isModelDownloaded(model)) {
+                                // If downloaded
+                                if (modelDownloader.isModelDownloaded(model, "litertlm")) {
                                     try {
-                                        val modelPath = modelDownloader.getModelPath(model)
+                                        val modelPath = modelDownloader.getModelPath(model, "litertlm")
                                         chatRepository.initializeOfflineModel(modelPath)
-                                        
-                                        // Check/Init Vision
-                                        if (modelDownloader.isModelDownloaded("efficientnet_lite0", "tflite")) {
-                                            val visionPath = modelDownloader.getModelPath("efficientnet_lite0", "tflite")
-                                            chatRepository.initializeOfflineVision(visionPath)
-                                            onModelSwitched()
-                                        } else {
-                                            // Vision missing, download it quickly
-                                            val visionUrl = "https://storage.googleapis.com/mediapipe-models/image_classifier/efficientnet_lite0/float32/1/efficientnet_lite0.tflite"
-                                            modelDownloader.downloadModel(visionUrl, "efficientnet_lite0", "tflite").collect { visionProgress ->
-                                                downloadProgress = visionProgress
-                                                if (visionProgress.status == DownloadStatus.COMPLETED) {
-                                                     val visionPath = modelDownloader.getModelPath("efficientnet_lite0", "tflite")
-                                                     chatRepository.initializeOfflineVision(visionPath)
-                                                     onModelSwitched()
-                                                     downloadProgress = null
-                                                }
-                                            }
-                                        }
+                                        onModelSwitched()
                                     } catch (e: Exception) {
                                         // Handle error
                                     }
-                                } else {
-                                    // Valid URLs from DownloadScreen
-                                     val url = when (model) {
-                                        "gemma-2b" -> "https://huggingface.co/Ph03nix1210/HybridMind-Assets/resolve/main/gemma-2b-it-cpu-int4.bin"
-                                        "gemma-4b" -> "https://huggingface.co/Ph03nix1210/HybridMind-Assets/resolve/main/gemma-3n-E4B-it-int4.bin"
+                                } else { 
+                                    // Not downloaded
+                                    val url = when (model) {
+                                        "gemma-2b" -> "https://huggingface.co/Ph03nix1210/HybridMind-Assets/resolve/main/gemma-3n-E2B-it-int4.litertlm"
+                                        "gemma-4b" -> "https://huggingface.co/Ph03nix1210/HybridMind-Assets/resolve/main/gemma-3n-E4B-it-int4.litertlm"
                                         else -> return@launch
                                     }
-                                    modelDownloader.downloadModel(url, model).collect { progress ->
+                                    
+                                    modelDownloader.downloadModel(url, model, "litertlm").collect { progress ->
                                         downloadProgress = progress
                                         if (progress.status == DownloadStatus.COMPLETED) {
-                                            // Auto-download Vision Model
-                                             val visionUrl = "https://storage.googleapis.com/mediapipe-models/image_classifier/efficientnet_lite0/float32/1/efficientnet_lite0.tflite"
-                                             modelDownloader.downloadModel(visionUrl, "efficientnet_lite0", "tflite").collect { visionProgress ->
-                                                if (visionProgress.status == DownloadStatus.COMPLETED) {
-                                                    val modelPath = modelDownloader.getModelPath(model)
-                                                    val visionPath = modelDownloader.getModelPath("efficientnet_lite0", "tflite")
-                                                    
-                                                    chatRepository.initializeOfflineModel(modelPath)
-                                                    chatRepository.initializeOfflineVision(visionPath)
-                                                    
-                                                    onModelSwitched()
-                                                    downloadProgress = null
-                                                }
-                                             }
+                                            try {
+                                                val modelPath = modelDownloader.getModelPath(model, "litertlm")
+                                                chatRepository.initializeOfflineModel(modelPath)
+                                                onModelSwitched()
+                                                downloadProgress = null
+                                            } catch (e: Exception) {
+                                                 downloadProgress = DownloadProgress(DownloadStatus.FAILED)
+                                            }
                                         }
                                     }
                                 }
@@ -166,7 +171,7 @@ fun SettingsScreen(
                     enabled = selectedModel != null && downloadProgress == null,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    val label = if (selectedModel != null && modelDownloader.isModelDownloaded(selectedModel!!)) {
+                    val label = if (selectedModel != null && modelDownloader.isModelDownloaded(selectedModel!!, "litertlm")) {
                         "Switch to Selected Model"
                     } else {
                         "Download & Switch"
@@ -215,9 +220,22 @@ fun SettingsScreen(
             ) {
                 Text("Sign Out")
             }
+            
+            OutlinedButton(
+                onClick = { showDeleteAccountDialog = true },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Delete Account")
+            }
         }
     }
 
+    // Delete All Chats Dialog
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
@@ -240,6 +258,74 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+    
+    // Delete Account Dialog
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingAccount) showDeleteAccountDialog = false },
+            title = { Text("Delete Account?") },
+            text = { 
+                Column {
+                    Text("This will permanently delete:")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("• Your account and profile")
+                    Text("• All your chat history")
+                    Text("• All associated data")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "This action cannot be undone!",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            isDeletingAccount = true
+                            try {
+                                // Delete all local chats first
+                                chatRepository.deleteAllUserChats()
+                                
+                                // Delete Firebase account
+                                val user = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                                user?.delete()?.await()
+                                
+                                // Navigate back after deletion
+                                onSignOut()
+                            } catch (e: Exception) {
+                                // Handle error - user might need to re-authenticate
+                                android.util.Log.e("SettingsScreen", "Delete account failed", e)
+                            } finally {
+                                isDeletingAccount = false
+                                showDeleteAccountDialog = false
+                            }
+                        }
+                    },
+                    enabled = !isDeletingAccount,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    if (isDeletingAccount) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Delete My Account")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteAccountDialog = false },
+                    enabled = !isDeletingAccount
+                ) {
                     Text("Cancel")
                 }
             }

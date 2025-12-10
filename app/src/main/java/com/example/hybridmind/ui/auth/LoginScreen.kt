@@ -8,10 +8,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.common.api.ApiException
-import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import androidx.compose.material.icons.Icons
@@ -130,57 +126,6 @@ fun LoginScreen(
                         }
                     }
 
-                    HorizontalDivider()
-
-                    // Google Sign In
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    val googleSignInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-                        contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-                    ) { result ->
-                        if (result.resultCode == android.app.Activity.RESULT_OK) {
-                            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-                            try {
-                                val account = task.getResult(ApiException::class.java)
-                                val credential = GoogleAuthProvider.getCredential(account.idToken, null)
-                                scope.launch {
-                                    isLoading = true
-                                    try {
-                                        val authResult = auth.signInWithCredential(credential).await()
-                                        // Check if this is a new user (account creation)
-                                        if (authResult.additionalUserInfo?.isNewUser == true) {
-                                            // "Login" should not create accounts. Revert.
-                                            auth.currentUser?.delete()?.await()
-                                            auth.signOut()
-                                            errorMessage = "Account does not exist. Please use Sign Up."
-                                        } else {
-                                            onLoginSuccess() // Existing user, proceed
-                                        }
-                                    } catch (e: Exception) {
-                                        errorMessage = "Google Sign-In failed: ${e.message}"
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            } catch (e: ApiException) {
-                                errorMessage = "Google Sign-In failed: ${e.statusCode}"
-                            }
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                                .requestIdToken(context.getString(com.example.hybridmind.R.string.default_web_client_id))
-                                .requestEmail()
-                                .build()
-                            val googleSignInClient = GoogleSignIn.getClient(context, gso)
-                            googleSignInLauncher.launch(googleSignInClient.signInIntent)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !isLoading
-                    ) {
-                         Text("Sign in with Google")
-                    }
 
                     // Create Account Link
                     TextButton(onClick = onNavigateToSignup) {

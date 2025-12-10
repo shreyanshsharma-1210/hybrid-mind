@@ -5,14 +5,26 @@ import com.example.hybridmind.core.NetworkMonitor
 import com.example.hybridmind.data.cloud.FirestoreRepository
 import com.example.hybridmind.data.local.AppDatabase
 import com.example.hybridmind.data.local.ChatSession
-import com.example.hybridmind.data.local.Message
+import com.example.hybridmind.data.local.Message as ChatMessage  // Use alias for database Message
 import com.google.ai.client.generativeai.GenerativeModel
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message as LiteRTMessage  // Use alias for LiteRT-LM Message
+import com.google.ai.edge.litertlm.MessageCallback
+import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.cancel
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 import java.util.UUID
 import com.google.firebase.auth.FirebaseAuth
 
@@ -22,41 +34,70 @@ class ChatRepository(
     private val database: AppDatabase,
     private val geminiApiKey: String
 ) {
-    private var llmInference: LlmInference? = null
+    private var engine: Engine? = null
+    private var conversation: Conversation? = null  // Reusable conversation (replaces session)
     private val chatDao = database.chatDao()
     private val firestoreRepository = FirestoreRepository()
     private val syncScope = CoroutineScope(Dispatchers.IO)
-    private var imageClassifier: com.google.mediapipe.tasks.vision.imageclassifier.ImageClassifier? = null // Offline Vision Helper
 
-    // Initialize MediaPipe LLM (call this after model download)
+
+    // Initialize LiteRT-LM Engine (call this after model download)
     suspend fun initializeOfflineModel(modelPath: String) {
         withContext(Dispatchers.IO) {
             try {
+                android.util.Log.d("ChatRepository", "Starting LiteRT-LM initialization for: $modelPath")
+                
+                // 1. Validate file exists
                 val file = java.io.File(modelPath)
                 if (!file.exists()) {
-                    throw Exception("Model file not found at: $modelPath")
+                    val errorMsg = "Model file not found at: $modelPath"
+                    android.util.Log.e("ChatRepository", errorMsg)
+                    throw Exception(errorMsg)
                 }
                 
-                // Check for plausible size (e.g. at least 100MB for a Gemma model)
-                // If it's small, it might be a partial download or error page
-                if (file.length() < 1024 * 1024 * 10) { // < 10MB
-                    throw Exception("Model file is too small (${file.length()} bytes). Download might be corrupted.")
+                // 2. Validate file size
+                val fileSizeMB = file.length() / (1024 * 1024)
+                android.util.Log.d("ChatRepository", "Model file size: $fileSizeMB MB")
+                
+                if (file.length() < 1024 * 1024 * 100) {
+                    throw Exception("Model file too small ($fileSizeMB MB). Expected at least 100MB.")
                 }
-
-                android.util.Log.d("ChatRepository", "Initializing LLM from ${file.absolutePath} (Size: ${file.length() / (1024 * 1024)} MB)")
-
-                val options = LlmInference.LlmInferenceOptions.builder()
-                    .setModelPath(modelPath)
-                    .setMaxTokens(1024)
-                    .setTemperature(0.7f)
-                    .setTopK(40)
-                    .build()
-
-                llmInference = LlmInference.createFromOptions(context, options)
-                android.util.Log.d("ChatRepository", "LLM Initialized successfully")
+                
+                // 3. Configure Engine (matching Google AI Edge Gallery)
+                android.util.Log.d("ChatRepository", "Creating Engine configuration...")
+                val engineConfig = EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.GPU,  // GPU for main LLM
+                    visionBackend = Backend.GPU,  // GPU for vision (MUST be GPU for Gemma 3n)
+                    maxNumTokens = 2048,
+                    cacheDir = context.getExternalFilesDir(null)?.absolutePath
+                )
+                
+                // 4. Initialize Engine
+                android.util.Log.d("ChatRepository", "Initializing Engine...")
+                engine = Engine(engineConfig)
+                engine?.initialize()
+                android.util.Log.d("ChatRepository", "✓ Engine initialized")
+                
+                // 5. Create Conversation (reusable session)
+                android.util.Log.d("ChatRepository", "Creating Conversation...")
+                conversation = engine?.createConversation(
+                    ConversationConfig(
+                        samplerConfig = SamplerConfig(
+                            topK = 40,
+                            topP = 0.95,
+                            temperature = 0.8
+                        )
+                    )
+                )
+                
+                android.util.Log.d("ChatRepository", "✓ LiteRT-LM initialized successfully!")
+                
             } catch (e: Exception) {
+                val errorMsg = "Failed to initialize offline model: ${e.message}"
+                android.util.Log.e("ChatRepository", errorMsg, e)
                 e.printStackTrace()
-                throw Exception("Failed to initialize offline model: ${e.message}")
+                throw Exception(errorMsg, e)
             }
         }
     }
@@ -73,7 +114,7 @@ class ChatRepository(
         userMessage: String,
         imageData: ByteArray? = null,
         saveImageToMessage: Boolean = true // Control whether to save image path to message
-    ): Message {
+    ): ChatMessage {
         val timestamp = System.currentTimeMillis()
         
         // Check session existence
@@ -91,7 +132,7 @@ class ChatRepository(
         }
 
         // Save user message to Room
-        val userMsg = Message(
+        val userMsg = ChatMessage(
             id = UUID.randomUUID().toString(),
             session_id = sessionId,
             role = "user",
@@ -143,7 +184,7 @@ class ChatRepository(
         }
 
         // Save model response to Room
-        val modelMsg = Message(
+        val modelMsg = ChatMessage(
             id = UUID.randomUUID().toString(),
             session_id = sessionId,
             role = "model",
@@ -296,92 +337,57 @@ class ChatRepository(
         }
     }
 
-    // Initialize MediaPipe Vision (Image Classifier)
-    suspend fun initializeOfflineVision(modelPath: String) {
-        withContext(Dispatchers.IO) {
-            try {
-                val file = java.io.File(modelPath)
-                if (file.exists()) {
-                     val baseOptions = com.google.mediapipe.tasks.core.BaseOptions.builder()
-                        .setModelAssetPath(modelPath)
-                        .build()
-                    
-                    val options = com.google.mediapipe.tasks.vision.imageclassifier.ImageClassifier.ImageClassifierOptions.builder()
-                        .setBaseOptions(baseOptions)
-                        .setMaxResults(5)
-                        .build()
-                        
-                    imageClassifier = com.google.mediapipe.tasks.vision.imageclassifier.ImageClassifier.createFromOptions(context, options)
-                    android.util.Log.d("ChatRepository", "Offline Vision Initialized")
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
+
 
     private suspend fun generateWithMediaPipe(sessionId: String, prompt: String, imageData: ByteArray? = null): String {
-        val inference = llmInference 
+        val conv = conversation 
             ?: return "Offline model not initialized. Please download the model first."
 
-        var currentTurnUserContent = prompt
-        
-        // Offline Vision: Classify image and append context
-        if (imageData != null && imageClassifier != null) {
-             try {
-                 val bitmap = android.graphics.BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
-                 if (bitmap != null) {
-                     val mpImage = com.google.mediapipe.framework.image.BitmapImageBuilder(bitmap).build()
-                     val result = imageClassifier!!.classify(mpImage)
-                     
-                     val labels = result.classificationResult().classifications().flatMap { 
-                         it.categories().map { category -> category.categoryName() } 
-                     }.joinToString(", ")
-                     
-                     if (labels.isNotEmpty()) {
-                         currentTurnUserContent = "Context: The user has uploaded an image containing: $labels.\n\nUser: $prompt"
-                     }
-                 }
-             } catch (e: Exception) {
-                 e.printStackTrace()
-             }
-        }
-
-        // Build History Prompt
-        val historyMessages = chatDao.getMessagesForSession(sessionId).filter { it.role != "system" }
-        // Take last 6 messages to keep context window manageable
-        val recentHistory = historyMessages.takeLast(6) 
-        
-        val fullPromptBuilder = StringBuilder()
-        for (msg in recentHistory) {
-             // Skip the current prompt if it was already inserted into DB (which it is, in sendMessage)
-             // sendMessage inserts userMsg BEFORE calling this function.
-             // So recentHistory INCLUDES the current prompt at the end?
-             // Yes: "sendMessage inserts userMsg" -> "generateWith..."
-             // So the last message in DB is the current user prompt.
-             // But we want to format it ourselves with the augmented vision content if applicable.
-             // So we should SKIP the very last message from history if it matches our current turn?
-             // Actually, `sendMessage` inserts `userMsg`. Then calls generation.
-             // So `historyMessages` contains `userMsg` as the last item.
-             // We should exclude the *last* item from history iteration, and append our `currentTurnUserContent` instead.
-             // Because `currentTurnUserContent` might have the image/vision context which is NOT in the DB content (DB has raw text).
-        }
-        
-        // Correct Logic:
-        // 1. Get history excluding the latest message (which is current turn)
-        val historyContext = if (historyMessages.isNotEmpty()) historyMessages.dropLast(1).takeLast(6) else emptyList()
-        
-        for (msg in historyContext) {
-            fullPromptBuilder.append("<start_of_turn>${msg.role}\n${msg.content}<end_of_turn>\n")
-        }
-        
-        // 2. Append current turn
-        fullPromptBuilder.append("<start_of_turn>user\n$currentTurnUserContent<end_of_turn>\n<start_of_turn>model\n")
-        
-        return try {
-            inference.generateResponse(fullPromptBuilder.toString())
-        } catch (e: Exception) {
-            "Error from offline model: ${e.message}"
+        return withContext(Dispatchers.IO) {
+            suspendCoroutine { continuation ->
+                try {
+                    // Build contents list (Google AI Edge Gallery pattern)
+                    val contents = mutableListOf<Content>()
+                    
+                    // Add image first if present (as PNG bytes)
+                    if (imageData != null) {
+                        android.util.Log.d("ChatRepository", "Adding image (${imageData.size} bytes)")
+                        contents.add(Content.ImageBytes(imageData))
+                    }
+                    
+                    // Add text prompt
+                    if (prompt.trim().isNotEmpty()) {
+                        contents.add(Content.Text(prompt))
+                    }
+                    
+                    val fullResponse = StringBuilder()
+                    
+                    // Send message with callback (streaming support)
+                    conv.sendMessageAsync(
+                        LiteRTMessage.of(contents),
+                        object : MessageCallback {
+                            override fun onMessage(message: LiteRTMessage) {
+                                // Append streaming chunks
+                                fullResponse.append(message.toString())
+                                android.util.Log.d("ChatRepository", "Chunk received: ${message.toString().take(50)}...")
+                            }
+                            
+                            override fun onDone() {
+                                android.util.Log.d("ChatRepository", "✓ Response complete (${fullResponse.length} chars)")
+                                continuation.resume(fullResponse.toString())
+                            }
+                            
+                            override fun onError(throwable: Throwable) {
+                                android.util.Log.e("ChatRepository", "Error: ${throwable.message}", throwable)
+                                continuation.resumeWithException(throwable)
+                            }
+                        }
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.e("ChatRepository", "Error: ${e.message}", e)
+                    continuation.resumeWithException(e)
+                }
+            }
         }
     }
 
@@ -418,7 +424,7 @@ class ChatRepository(
         }
     }
 
-    suspend fun getMessagesForSession(sessionId: String): List<Message> {
+    suspend fun getMessagesForSession(sessionId: String): List<ChatMessage> {
         return withContext(Dispatchers.IO) {
             chatDao.getMessagesForSession(sessionId)
         }
@@ -432,10 +438,12 @@ class ChatRepository(
     }
 
     fun isOfflineModelReady(): Boolean {
-        return llmInference != null
+        return engine != null && conversation != null
     }
 
     fun cleanup() {
-        llmInference?.close()
+        conversation = null
+        engine = null
+        syncScope.cancel()
     }
 }

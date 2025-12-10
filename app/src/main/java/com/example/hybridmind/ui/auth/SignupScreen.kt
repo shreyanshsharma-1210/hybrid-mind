@@ -9,10 +9,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.common.api.ApiException
-import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import androidx.compose.material.icons.Icons
@@ -22,9 +18,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 @OptIn(ExperimentalMaterial3Api::class)
 fun SignupScreen(
     onSignupSuccess: () -> Unit,
-    onGoogleSignupSuccess: () -> Unit,
     onBack: () -> Unit
 ) {
+    var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
@@ -71,6 +67,14 @@ fun SignupScreen(
                     )
 
                     OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Full Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
                         value = email,
                         onValueChange = { email = it },
                         label = { Text("Email") },
@@ -113,11 +117,18 @@ fun SignupScreen(
                                     val result = auth.createUserWithEmailAndPassword(email, password).await()
                                     val user = result.user
                                     if (user != null) {
+                                        // Update user profile with name
+                                        val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                                            .setDisplayName(name)
+                                            .build()
+                                        user.updateProfile(profileUpdates).await()
+                                        
+                                        // Send verification email
                                         user.sendEmailVerification().await()
                                         successMessage = "Verification email sent to $email. Please verify before logging in."
                                         auth.signOut() // Sign out so they can't proceed without login
-                                        // Optionally delay or wait for user to click separate 'Back to Login' button
-                                        // For now, we stay here to show message, maybe clear fields
+                                        // Clear fields
+                                        name = ""
                                         email = ""
                                         password = ""
                                     }
@@ -129,7 +140,7 @@ fun SignupScreen(
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !isLoading && email.isNotBlank() && password.isNotBlank()
+                        enabled = !isLoading && name.isNotBlank() && email.isNotBlank() && password.isNotBlank()
                     ) {
                         if (isLoading) {
                             CircularProgressIndicator(
@@ -141,54 +152,6 @@ fun SignupScreen(
                         }
                     }
                     
-                    HorizontalDivider()
-
-                    // Google Sign Up
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    val googleSignInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-                        contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-                    ) { result ->
-                        if (result.resultCode == android.app.Activity.RESULT_OK) {
-                            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-                            try {
-                                val account = task.getResult(ApiException::class.java)
-                                val credential = GoogleAuthProvider.getCredential(account.idToken, null)
-                                scope.launch {
-                                    isLoading = true
-                                    try {
-                                        auth.signInWithCredential(credential).await()
-                                        // Google accounts are auto-verified, proceed to success.
-                                        // We do NOT sign out. We proceed to the app.
-                                        android.util.Log.d("SignupScreen", "Google Sign Up Successful: ${account.email}")
-                                        onGoogleSignupSuccess()
-                                    } catch (e: Exception) {
-                                        android.util.Log.e("SignupScreen", "Google Sign-Up Firebase Error", e)
-                                        errorMessage = "Google Sign-Up failed: ${e.message}"
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            } catch (e: ApiException) {
-                                android.util.Log.e("SignupScreen", "Google Sign-In API Error: ${e.statusCode}", e)
-                                errorMessage = "Google Sign-In failed: ${e.statusCode}"
-                            }
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                                .requestIdToken(context.getString(com.example.hybridmind.R.string.default_web_client_id))
-                                .requestEmail()
-                                .build()
-                            val googleSignInClient = GoogleSignIn.getClient(context, gso)
-                            googleSignInLauncher.launch(googleSignInClient.signInIntent)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !isLoading
-                    ) {
-                         Text("Sign up with Google")
-                    }
 
                     TextButton(onClick = onSignupSuccess) {
                         Text("Already have an account? Log in")
